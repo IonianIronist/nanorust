@@ -1,6 +1,7 @@
 extern crate sdl2;
 
 use rand::prelude::*;
+use rayon::prelude::*;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::Color;
@@ -8,7 +9,7 @@ use sdl2::rect::Rect;
 use std::f32::consts::PI;
 use std::fs::File;
 use std::io::prelude::*;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct InformationMolecule {
     speed: f32,
@@ -105,7 +106,7 @@ pub struct Transmitter {
 impl Transmitter {
     pub fn new(x: i32, y: i32, w: u32, h: u32) -> Self {
         Transmitter {
-            transmission_size: 800,
+            transmission_size: 1100,
             rect: Rect::new(x, y, w, h),
         }
     }
@@ -136,7 +137,7 @@ pub struct Receiver {
 impl Receiver {
     pub fn new(x: i32, y: i32, w: u32, h: u32) -> Self {
         Receiver {
-            chemotatic_molecules_count: 1000,
+            chemotatic_molecules_count: 500,
             max_receptors: 20,
             free_receptors: 20,
             rect: Rect::new(x, y, w, h),
@@ -209,6 +210,7 @@ fn count_molecules_in_range(
             count += 1;
         }
     }
+
     count
 }
 
@@ -225,14 +227,14 @@ pub fn main() {
 
     let mut output_file = create_output_file();
 
-    //let window = video_subsystem
-    //    .window("chemotaxis", 800, 600)
-    //    .position_centered()
-    //    .opengl()
-    //    .build()
-    //    .unwrap();
+    let window = video_subsystem
+        .window("chemotaxis", 800, 600)
+        .position_centered()
+        .opengl()
+        .build()
+        .unwrap();
 
-    //let mut canvas = window.into_canvas().build().unwrap();
+    let mut canvas = window.into_canvas().build().unwrap();
 
     let transmitter = Transmitter::new(200, 200, 40, 40);
     let mut information_molecules = transmitter.transmit();
@@ -240,17 +242,18 @@ pub fn main() {
     let mut receiver = Receiver::new(650, 500, 40, 40);
     let mut chemotactic_molecules = receiver.transmit();
 
-    //canvas.set_draw_color(Color::RGB(0, 255, 255));
-    //canvas.clear();
-    //canvas.present();
+    canvas.set_draw_color(Color::RGB(0, 255, 255));
+    canvas.clear();
+    canvas.present();
 
     let mut event_pump = sdl_context.event_pump().unwrap();
 
     let mut timer: u128 = 0;
 
     'running: loop {
-        //canvas.set_draw_color(Color::RGB(200, 200, 200));
-        //canvas.clear();
+        let now = Instant::now();
+        canvas.set_draw_color(Color::RGB(200, 200, 200));
+        canvas.clear();
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit { .. }
@@ -262,9 +265,9 @@ pub fn main() {
             }
         }
         // The rest of the game loop goes here...
-        //canvas.set_draw_color(Color::RGB(0, 0, 0));
-        //let _ = canvas.fill_rect(transmitter.rect);
-        //let _ = canvas.fill_rect(receiver.rect);
+        canvas.set_draw_color(Color::RGB(0, 0, 0));
+        let _ = canvas.fill_rect(transmitter.rect);
+        let _ = canvas.draw_rect(receiver.rect);
 
         if timer % 100 == 0 {
             println!("{}", timer);
@@ -275,37 +278,37 @@ pub fn main() {
             println!("Transmitting new molecules");
         }
 
-        //canvas.set_draw_color(Color::RGB(255, 0, 0));
+        canvas.set_draw_color(Color::RGB(255, 0, 0));
         for i in 0..chemotactic_molecules.len() {
             chemotactic_molecules[i].tumble();
             chemotactic_molecules[i].run();
-            //let _ = canvas.draw_rect(chemotactic_molecules[i].rect);
+            let _ = canvas.draw_rect(chemotactic_molecules[i].rect);
         }
 
-        //canvas.set_draw_color(Color::RGB(0, 0, 0));
-        for i in 0..information_molecules.len() {
-            let mut in_range = information_molecules[i].stimulus;
-            if information_molecules[i].tumble_timer <= 0 {
-                in_range = count_molecules_in_range(
-                    &information_molecules[i],
-                    &chemotactic_molecules,
-                    20.0,
-                );
+        canvas.set_draw_color(Color::RGB(0, 0, 0));
+
+        information_molecules.par_iter_mut().for_each(|m| {
+            let mut in_range = m.stimulus;
+            if m.tumble_timer <= 0 {
+                in_range = count_molecules_in_range(&m, &chemotactic_molecules, 20.0);
             }
-            information_molecules[i].tumble(in_range);
-            information_molecules[i].run();
-            //let _ = canvas.draw_rect(information_molecules[i].rect);
+            m.tumble(in_range);
+            m.run();
+        });
+
+        for i in 0..information_molecules.len() {
             if receiver
                 .rect
                 .has_intersection(information_molecules[i].rect)
+                && !information_molecules[i].released
                 && !information_molecules[i].stopped
+                && receiver.receive()
             {
-                if receiver.receive() {
-                    information_molecules[i].stopped = true;
-                }
+                println!("{}", receiver.free_receptors);
+                information_molecules[i].stopped = true;
             }
+            let _ = canvas.draw_rect(information_molecules[i].rect);
         }
-        //let _ = canvas.draw_rect(information_molecules[0].rect);
 
         information_molecules = information_molecules
             .into_iter()
@@ -320,14 +323,16 @@ pub fn main() {
             })
             .collect();
 
-        //::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
-        //canvas.present();
+        ::std::thread::sleep(Duration::new(0, 1_000_000_000u32 / 60));
+        canvas.present();
         timer += 1;
-        //let datapoint = format!(
-        //    "{},{};",
-        //    receiver.max_receptors - receiver.free_receptors,
-        //    timer
-        //);
-        //output_file.write(datapoint.as_bytes()).unwrap();
+        let datapoint = format!(
+            "{},{};",
+            receiver.max_receptors - receiver.free_receptors,
+            timer
+        );
+        output_file.write(datapoint.as_bytes()).unwrap();
+        let elapsed = now.elapsed();
+        //println!("Elapsed: {} ms", elapsed.as_millis());
     }
 }
